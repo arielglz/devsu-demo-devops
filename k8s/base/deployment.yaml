@@ -1,0 +1,54 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-devops-app
+  namespace: production
+  labels:
+    app: demo-devops
+    run: demo-devops-app
+spec:
+  selector:
+    matchLabels:
+      app: demo-devops
+      run: demo-devops-app
+  template:
+    metadata:
+      labels:
+        app: demo-devops
+        run: demo-devops-app
+    spec:
+      containers:
+      - name: demo-devops-app
+        image: us-central1-docker.pkg.dev/devsu-devops-390022/devsu/demo-devops:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: DATABASE_NAME
+          valueFrom:
+            secretKeyRef:
+              name: db-name
+              key: db-name
+        - name: DATABASE_USER
+          valueFrom:
+            secretKeyRef:
+              name: db-user
+              key: db-user
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-pwd
+              key: db-pwd
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: "/api/users/"
+            port: 8000
+            scheme: HTTP
+        resources:
+          limits:
+            cpu: 200m
+            memory: 500Mi
+          requests:
+            cpu: 100m
+            memory: 200Mi

@@ -1,0 +1,130 @@
+name: Test, Build and Deploy to Google Kubernete Engine
+
+on:
+  push:
+    branches: [ "master" ]
+
+env:
+  PROJECT_ID: devsu-devops-390022 
+  GAR_LOCATION: us-central1 
+  GKE_CLUSTER: devsu-devops-gke  
+  GKE_ZONE: us-central1-a   
+  DEPLOYMENT_NAME: demo-devops-app 
+  REPOSITORY: devsu 
+  IMAGE: demo-devops
+  ENV_TYPE: production
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    environment: production
+
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+
+    # Authentication via GCP JSON Credentials
+    - id: 'auth'
+      uses: 'google-github-actions/auth@v0'
+      with:
+        credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+
+    # Static Analysis of Code with npm audit
+    - name: Static Code Analysis
+      run: |-
+        npm audit
+      continue-on-error: true
+    
+    # Unit Testing and Code Coverage with jest
+    - name: Unit Testing and Code Coverage
+      run: |-
+        npm i jest
+        npm run coverage
+
+  build-push:
+    name: Build and Push to GCR
+    runs-on: ubuntu-latest
+    environment: production
+    needs: [test]
+
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+
+    # Authentication with GCP via JSON Credentials
+    - id: 'auth'
+      uses: 'google-github-actions/auth@v0'
+      with:
+        credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+
+    # Configure Docker Client with gcloud to access GAR
+    - name: Config Docker Client
+      run: gcloud auth configure-docker ${{ env.GAR_LOCATION }}-docker.pkg.dev --quiet
+
+    # Build Docker Image
+    - name: Build Docker Image
+      run: |- 
+        docker build -t $IMAGE:latest . --no-cache
+
+    # Automatic application of Tag Release
+    - name: Tagging of Release
+      id: increment-git-tag
+      run: |
+        bash ./scripts/git_update.sh -v major
+
+    # Push the Docker Image to GAR (Google Artifact Registry)
+    - name: Publish
+      env:
+        GIT_TAG: ${{ steps.increment-git-tag.outputs.git-tag }}
+      run: |-
+        docker tag $IMAGE:latest $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:latest
+        docker tag $IMAGE:latest $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:$GIT_TAG
+        docker push $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:latest
+        docker push $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:$GIT_TAG
+
+  deploy:
+    name: GKE Deployment
+    needs: [build-push]
+    runs-on: ubuntu-latest
+    environment: production
+    
+    steps:
+    - uses: actions/checkout@master
+
+    # Obtain GKE credentials to be able deploy to the GKE Cluster
+    - id: 'auth'
+      uses: 'google-github-actions/auth@v1'
+      with:
+        credentials_json: '${{ secrets.gcp_credentials }}'
+
+    #  Obtain GKE credentials to be able deploy to the GKE Cluster
+    - name: Set up GKE credentials
+      uses: google-github-actions/get-gke-credentials@v0
+      with:
+        cluster_name: ${{ env.GKE_CLUSTER }}
+        location: ${{ env.GKE_ZONE }}
+    
+     # Create Secret to be able to pull images from GAR
+    - name: Secret to allow pull image from GAR
+      run: |-          
+        kubectl create secret docker-registry gar-json-key \
+              --docker-server=${{ env.GAR_LOCATION }}-docker.pkg.dev \
+              --docker-username=_json_key \
+              --docker-password=${{ secrets.GCP_CREDENTIALS }} \
+              --docker-email=kubernetes@devsu-devops-390022.iam.gserviceaccount.com
+      continue-on-error: true 
+
+    # Deploy the Docker image to the GKE cluster
+    - name: Deploy
+      run: |-
+        kubectl apply -k k8s/${{ env.ENV_TYPE }}
+        kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }} -n ${{ env.ENV_TYPE }}

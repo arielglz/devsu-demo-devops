@@ -1,0 +1,6 @@
+*.md
+*.gitignore
+k8s/
+terraform/
+scripts/
+.env
